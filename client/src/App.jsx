@@ -10,10 +10,10 @@ const ProtectedRoute = ({ children }) => {
   
   // If not authenticated, redirect to login
   if (!isAuthenticated) {
-    return <Navigate to="/login" />;
+    return <Navigate to="/login" replace />;
   }
   
-  // If authenticated, error
+  // If authenticated, render children
   return children;
 };
 
@@ -31,7 +31,15 @@ const App = () => {
           } 
         />
         
-        <Route path="*" element={<Navigate to="/" />} />
+        {/* Catch all route - redirect to login if not authenticated, otherwise to homepage */}
+        <Route 
+          path="*" 
+          element={
+            localStorage.getItem('user') !== null 
+              ? <Navigate to="/" replace /> 
+              : <Navigate to="/login" replace />
+          } 
+        />
       </Routes>
     </Router>
   );
