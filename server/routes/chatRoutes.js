@@ -22,7 +22,7 @@ router.post('/', async (req, res) => {
     }
 
     console.log('Token exists:', token.substring(0, 7) + '...');
-    console.log('Sending request to HuggingFace...');
+    console.log('Sending request to OpenAI...');
 
     const client = new InferenceClient(token);
     const chatCompletion = await client.chatCompletion({
