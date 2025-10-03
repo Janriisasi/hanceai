@@ -6,9 +6,13 @@ import authRoutes from './routes/authRoutes.js';
 import chatRoutes from './routes/chatRoutes.js';
 
 dotenv.config();
+
 const app = express();
+
+// Connect DB
 connectDB();
 
+// Middlewares
 app.use(express.json());
 app.use(cors());
 
@@ -16,4 +20,11 @@ app.use(cors());
 app.use('/api/auth', authRoutes);
 app.use('/api/chat', chatRoutes);
 
-app.listen(5000, () => console.log("Server running on port 5000"));
+// Health check route
+app.get('/', (req, res) => {
+  res.send('API is running...');
+});
+
+// ✅ Use Render's dynamic PORT
+const PORT = process.env.PORT || 5000;
+app.listen(PORT, () => console.log(`Server running on port ${PORT}`));
