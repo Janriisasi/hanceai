@@ -1,6 +1,6 @@
 import React, { useState, useEffect, useRef } from 'react';
 import { FontAwesomeIcon } from '@fortawesome/react-fontawesome';
-import { faCommentDots, faUser, faPaperPlane, faSignOutAlt, faBars, faTimes } from '@fortawesome/free-solid-svg-icons';
+import { faCommentDots, faUser, faPaperPlane, faSignOutAlt, faBars, faTimes, faStop } from '@fortawesome/free-solid-svg-icons';
 import { useNavigate } from 'react-router-dom';
 import Markdown from 'react-markdown';
 import { InferenceClient } from "@huggingface/inference";
@@ -15,6 +15,9 @@ const Homepage = () => {
   const messagesEndRef = useRef(null);
   const navigate = useNavigate();
   const profileMenuRef = useRef(null);
+  const typingIntervalRef = useRef(null);
+  const abortControllerRef = useRef(null);
+  const currentRequestIdRef = useRef(null);
 
   const aiProfile = {
     name: "HanceAI",
@@ -29,13 +32,53 @@ const Homepage = () => {
   // Helper to clean AI response
   const cleanResponse = (text) => {
     if (!text) return '';
-    return text.replace(/<think>|<\/think>/g, '').trim();
+    // Remove <think> tags and markdown code block markers
+    return text
+      .replace(/<think>|<\/think>/g, '')
+      .replace(/```markdown\n?/g, '')
+      .replace(/```\n?/g, '')
+      .trim();
+  };
+
+  // Stop typing animation and abort request
+  const stopTyping = async () => {
+    // Stop the typing animation
+    if (typingIntervalRef.current) {
+      clearInterval(typingIntervalRef.current);
+      typingIntervalRef.current = null;
+    }
+    
+    // Abort the fetch request
+    if (abortControllerRef.current) {
+      abortControllerRef.current.abort();
+      abortControllerRef.current = null;
+    }
+    
+    // Also send abort request to backend if we have a request ID
+    if (currentRequestIdRef.current) {
+      try {
+        await fetch('http://localhost:5000/api/chat/abort', {
+          method: 'POST',
+          headers: {
+            'Content-Type': 'application/json',
+          },
+          body: JSON.stringify({
+            requestId: currentRequestIdRef.current,
+          }),
+        });
+      } catch (error) {
+        console.log('Failed to send abort signal to backend:', error);
+      }
+      currentRequestIdRef.current = null;
+    }
+    
+    setIsAiTyping(false);
   };
 
   // Typing animation
   const simulateTyping = (fullText) => {
     let index = 0;
-    const typingInterval = setInterval(() => {
+    typingIntervalRef.current = setInterval(() => {
       setMessages(prevMessages => {
         const lastMessage = prevMessages[prevMessages.length - 1];
         if (lastMessage.sender === 'ai') {
@@ -47,7 +90,8 @@ const Homepage = () => {
             index++;
             return [...prevMessages.slice(0, -1), updatedLastMessage];
           } else {
-            clearInterval(typingInterval);
+            clearInterval(typingIntervalRef.current);
+            typingIntervalRef.current = null;
             setIsAiTyping(false);
             return prevMessages;
           }
@@ -75,6 +119,7 @@ const Homepage = () => {
     document.addEventListener('mousedown', handleClickOutside);
     return () => {
       document.removeEventListener('mousedown', handleClickOutside);
+      stopTyping();
     };
   }, [navigate]);
 
@@ -87,6 +132,12 @@ const Homepage = () => {
   }, [messages]);
 
   const handleSendMessage = async () => {
+    // If AI is typing, stop it first
+    if (isAiTyping) {
+      await stopTyping();
+      return;
+    }
+
     if (inputValue.trim() === '') return;
 
     const newUserMessage = {
@@ -96,18 +147,28 @@ const Homepage = () => {
     };
 
     setMessages(prev => [...prev, newUserMessage]);
+    const userInput = inputValue;
     setInputValue('');
     setIsAiTyping(true);
+
+    // Create new AbortController for this request
+    abortControllerRef.current = new AbortController();
+    
+    // Generate unique request ID
+    const requestId = `req_${Date.now()}_${Math.random().toString(36).substr(2, 9)}`;
+    currentRequestIdRef.current = requestId;
 
     try {
       const response = await fetch('http://localhost:5000/api/chat', {
         method: 'POST',
         headers: {
           'Content-Type': 'application/json',
+          'X-Request-ID': requestId,
         },
         body: JSON.stringify({
-          message: inputValue,
+          message: userInput,
         }),
+        signal: abortControllerRef.current.signal,
       });
 
       if (!response.ok) {
@@ -133,10 +194,26 @@ const Homepage = () => {
         simulateTyping(cleanText);
       } else {
         setIsAiTyping(false);
+        currentRequestIdRef.current = null;
       }
       
 
     } catch (error) {
+      if (error.name === 'AbortError') {
+        console.log('Request was aborted by user');
+        // Remove the loading dots message if it exists
+        setMessages(prev => {
+          const lastMessage = prev[prev.length - 1];
+          if (lastMessage && lastMessage.sender === 'ai' && lastMessage.text === '') {
+            return prev.slice(0, -1);
+          }
+          return prev;
+        });
+        setIsAiTyping(false);
+        currentRequestIdRef.current = null;
+        return;
+      }
+      
       console.error('Error communicating with AI:', error);
       const aiError = {
         id: Date.now() + 1,
@@ -145,6 +222,7 @@ const Homepage = () => {
       };
       setMessages(prev => [...prev, aiError]);
       setIsAiTyping(false);
+      currentRequestIdRef.current = null;
     }
   };
 
@@ -153,6 +231,13 @@ const Homepage = () => {
       e.preventDefault();
       handleSendMessage();
     }
+  };
+
+  const handleNewChat = () => {
+    stopTyping();
+    setMessages([]);
+    setInputValue('');
+    setShowMobileSidebar(false);
   };
 
   const handleLogout = () => {
@@ -171,9 +256,9 @@ const Homepage = () => {
         >
           <FontAwesomeIcon icon={showMobileSidebar ? faTimes : faBars} />
         </button>
-        <div className="w-8 h-8 flex items-center justify-center">
-          <img src={aiProfile.logo} alt="AI" className="w-full h-full object-cover" />
-        </div>
+          <div className="h-8 flex items-center justify-center">
+            <img src="/Logo.svg" alt="AI" className="h-full w-auto object-contain" />
+          </div>
         <button
           className="w-8 h-8 rounded-full bg-gray-800 flex items-center justify-center text-gray-300"
           onClick={() => setShowProfileMenu(!showProfileMenu)}
@@ -200,7 +285,11 @@ const Homepage = () => {
           </div>
         </div>
         <div className="flex-1 flex flex-col items-center">
-          <button className="mb-6 text-gray-400 hover:text-white">
+          <button 
+            className="mb-6 text-gray-400 hover:text-white transition-colors"
+            onClick={handleNewChat}
+            title="New Chat"
+          >
             <div className="text-2xl">
               <FontAwesomeIcon icon={faCommentDots} />
             </div>
@@ -311,13 +400,16 @@ const Homepage = () => {
                           pre: ({node, ...props}) => <pre className="bg-gray-900 rounded-md my-2 overflow-x-auto" {...props} />,
                           table: ({node, ...props}) => (
                             <div className="overflow-x-auto my-3">
-                              <table className="min-w-full border-collapse border border-gray-600 text-sm" {...props} />
+                              <table className="min-w-full border-collapse border border-gray-600 text-sm" {...props}>
+                                {props.children}
+                              </table>
                             </div>
                           ),
                           thead: ({node, ...props}) => <thead className="bg-gray-700" {...props} />,
                           tr: ({node, ...props}) => <tr className="border-b border-gray-600" {...props} />,
                           th: ({node, ...props}) => <th className="border border-gray-600 px-3 py-2 text-left font-semibold" {...props} />,
                           td: ({node, ...props}) => <td className="border border-gray-600 px-3 py-2" {...props} />,
+
                           hr: ({node, ...props}) => <hr className="my-3 border-gray-600" {...props} />,
                           blockquote: ({node, ...props}) => <blockquote className="border-l-4 border-purple-500 pl-4 italic my-2 text-gray-300" {...props} />,
                           a: ({node, ...props}) => <a className="text-purple-400 hover:text-purple-300 underline" target="_blank" rel="noopener noreferrer" {...props} />,
@@ -325,6 +417,7 @@ const Homepage = () => {
                       >
                         {message.text}
                       </Markdown>
+
                     </div>
                   ) : (
                     message.text
@@ -359,14 +452,24 @@ const Homepage = () => {
                 value={inputValue}
                 onChange={(e) => setInputValue(e.target.value)}
                 onKeyPress={handleKeyPress}
-                placeholder="Enter your prompt here"
-                className="w-full bg-black border border-purple-800 rounded-full py-3 px-4 md:py-4 md:px-6 text-sm md:text-base text-white focus:outline-none focus:ring-2 focus:ring-purple-600"
+                placeholder={isAiTyping ? "AI is responding..." : "Enter your prompt here"}
+                className="w-full bg-black border border-purple-800 rounded-full py-3 px-4 md:py-4 md:px-6 text-sm md:text-base text-white focus:outline-none focus:ring-2 focus:ring-purple-600 disabled:opacity-50 disabled:cursor-not-allowed"
+                disabled={isAiTyping}
               />
               <button
                 onClick={handleSendMessage}
-                className="bg-purple-700 hover:bg-purple-600 rounded-full w-10 h-10 md:w-12 md:h-12 flex items-center justify-center text-white cursor-pointer flex-shrink-0"
+                disabled={!isAiTyping && inputValue.trim() === ''}
+                className={`${
+                  isAiTyping 
+                    ? 'bg-red-600 hover:bg-red-500' 
+                    : 'bg-purple-700 hover:bg-purple-600 disabled:opacity-50 disabled:cursor-not-allowed'
+                } rounded-full w-10 h-10 md:w-12 md:h-12 flex items-center justify-center text-white cursor-pointer flex-shrink-0 transition-colors`}
+                title={isAiTyping ? 'Stop generating' : 'Send message'}
               >
-                <FontAwesomeIcon icon={faPaperPlane} className="text-sm md:text-base" />
+                <FontAwesomeIcon 
+                  icon={isAiTyping ? faStop : faPaperPlane} 
+                  className="text-sm md:text-base" 
+                />
               </button>
             </div>
           </div>
